@@ -4,11 +4,13 @@ import fitz
 import faiss
 import pickle
 from django.conf import settings
-from rest_framework.decorators import api_view
+from rest_framework.decorators import api_view,permission_classes
 from rest_framework.response import Response
+from rest_framework.permissions import IsAuthenticated
 from sentence_transformers import SentenceTransformer
 from google import genai
 from User.models import User,Chats
+
 
 
 DATA_PATH=os.path.join(settings.BASE_DIR,"rag","data")
@@ -105,48 +107,92 @@ def load_index():
 
 
 @api_view(["POST"])
+@permission_classes([IsAuthenticated])
 def ask_question(request):
-    query=request.data.get("question")
-    chat_id=request.data.get("chat_id")
-    user_id=request.data.get("user_id")
-    conversation_id=request.data.get("conversation_id")
+    query = request.data.get("question")
+    chat_id = request.data.get("chat_id")
+    conversation_id = request.data.get("conversation_id")
     if not query:
-        return Response({"error":"Question is required"},status=400)
+        return Response(
+            {"error": "Question is required"},
+            status=400
+        )
     if chat_id is None:
-        return Response({"error":"chat_id is required"},status=400)
-    if user_id is None:
-        return Response({"error":"user_id is required"},status=400)
+        return Response(
+            {"error": "chat_id is required"},
+            status=400
+        )
     if conversation_id is None:
-        return Response({"error":"conversation_id is required"},status=400)
+        return Response(
+            {"error": "conversation_id is required"},
+            status=400
+        )
     try:
-        chat=Chats.objects.get(id=chat_id,user_id=user_id)
+        chat = Chats.objects.get(
+            id=chat_id,
+            user=request.user
+        )
     except Chats.DoesNotExist:
-        return Response({"error":"Chat not found"},status=404)
-    if conversation_id<0 or conversation_id>=len(chat.chats):
-        return Response({"error":"Invalid conversation_id"},status=400)
-    index,chunks=load_index()
+        return Response(
+            {"error": "Chat not found"},
+            status=404
+        )
+
+    if conversation_id < 0 or conversation_id >= len(chat.chats):
+        return Response(
+            {"error": "Invalid conversation_id"},
+            status=400
+        )
+
+    index, chunks = load_index()
     if index is None or not chunks:
-        return Response({"error":"No legal documents have been indexed yet"},status=400)
-    query_embedding=model.encode([query],normalize_embeddings=True)
-    k=min(5,index.ntotal)
-    similarities,indices=index.search(query_embedding,k)
-    context=""
-    sources=[]
+        return Response(
+            {"error": "No legal documents have been indexed yet"},
+            status=400
+        )
+    query_embedding = model.encode(
+        [query],
+        normalize_embeddings=True
+    )
+    k = min(5, index.ntotal)
+    similarities, indices = index.search(
+        query_embedding,
+        k
+    )
+    context = ""
+    sources = []
     for i in range(k):
-        index_value=indices[0][i]
-        if index_value<0:
+        index_value = indices[0][i]
+        if index_value < 0:
             continue
-        chunk=chunks[index_value]
-        context+=chunk["text"]+"\n\n"
+        chunk = chunks[index_value]
+        context += chunk["text"] + "\n\n"
         sources.append(chunk["source"])
-    prompt=f"""Answer the question using only the provided context.
+    prompt = f"""Answer the question using only the provided context.
+
 Context:
+
 {context}
+
 Question:
+
 {query}
+
 If the context does not contain enough information, say so."""
-    client=genai.Client(api_key="enter api key")
-    response=client.models.generate_content(model="gemini-3.6-flash",contents=prompt)
-    chat.chats[conversation_id].append([query,response.text])
+
+    client = genai.Client(
+        api_key="api key"
+    )
+    response = client.models.generate_content(
+        model="gemini-3.6-flash",
+        contents=prompt
+    )
+    chat.chats[conversation_id].append(
+        [query, response.text]
+    )
     chat.save()
-    return Response({"question":query,"answer":response.text,"sources":list(set(sources))})
+    return Response({
+        "question": query,
+        "answer": response.text,
+        "sources": list(set(sources))
+    })
