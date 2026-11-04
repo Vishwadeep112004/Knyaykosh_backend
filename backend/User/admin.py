@@ -8,5 +8,5 @@ class UserAdmin(admin.ModelAdmin):
 
 @admin.register(Chats)
 class ChatsAdmin(admin.ModelAdmin):
-    list_display = ("id", "user", "chats")
+    list_display = ("id", "user", "created_at")
     list_display_links = ("id", "user")

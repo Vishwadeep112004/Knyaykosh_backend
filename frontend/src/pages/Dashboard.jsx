@@ -8,6 +8,51 @@ import api from "../api/api";
 import { useAuth } from "../context/AuthContext";
 import { useTheme } from "../context/ThemeContext";
 
+/* ------------------------------------------------------------------ */
+/* Helpers                                                             */
+/* ------------------------------------------------------------------ */
+
+// Convert a backend Chat record's `convo` array into UI messages.
+const restoreMessages = (chat) => {
+    const conversation = Array.isArray(chat?.convo) ? chat.convo : [];
+    return conversation.map((item, idx) => ({
+        id: `${chat.id}-${idx}`,
+        question: item?.query || "",
+        answer: item?.answer || "",
+        sources: Array.isArray(item?.sources) ? item.sources : [],
+        isNew: false,
+        loading: false,
+        error: false
+    }));
+};
+
+// Newest conversation first.
+const sortChats = (list) =>
+    [...list].sort((a, b) => {
+        const ta = a.updated_at ? new Date(a.updated_at).getTime() : 0;
+        const tb = b.updated_at ? new Date(b.updated_at).getTime() : 0;
+        if (tb !== ta) return tb - ta;
+        return (b.id || 0) - (a.id || 0);
+    });
+
+const isConnectionError = (err) =>
+    err?.code === "ERR_NETWORK" || !err?.response;
+
+const describeError = (err, fallback) => {
+    if (err?.response?.status === 401) {
+        return "Your session has expired. Please sign in again.";
+    }
+    if (isConnectionError(err)) {
+        return "Unable to connect to the NyayKosh server. Please ensure the backend is running.";
+    }
+    const data = err.response?.data;
+    return (
+        (typeof data === "string" ? null : data?.error) ||
+        (typeof data === "string" ? null : data?.detail) ||
+        fallback
+    );
+};
+
 function Dashboard() {
     const [sidebarOpen, setSidebarOpen] = useState(true);
     const [question, setQuestion] = useState("");
@@ -17,36 +62,108 @@ function Dashboard() {
     const [serverErrorBanner, setServerErrorBanner] = useState(null);
     const [chats, setChats] = useState([]);
     const [activeChatId, setActiveChatId] = useState(null);
-    const [conversationId, setConversationId] = useState(0);
     const [creatingChat, setCreatingChat] = useState(false);
     const [sending, setSending] = useState(false);
+    const [loadingChat, setLoadingChat] = useState(false);
 
     const { user, logout } = useAuth();
     const { isDark, toggleTheme } = useTheme();
     const messagesEndRef = useRef(null);
 
+    // Refs used to avoid stale closures, duplicate requests and stale responses.
+    const activeChatIdRef = useRef(null);
+    const chatsRef = useRef([]);
+    const sendingRef = useRef(false);
+    const creatingRef = useRef(false);
+    const deletingRef = useRef(new Set());
+    const loadTokenRef = useRef(0);
+    const switchEpochRef = useRef(0);
+    const messageCounterRef = useRef(0);
+    const suppressSelectRef = useRef(false);
+
+    chatsRef.current = chats;
+
     useEffect(() => {
         messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-    }, [messages, sending]);
+    }, [messages, sending, loadingChat]);
 
+    // Single place that changes the active conversation.
+    const setActive = (id) => {
+        activeChatIdRef.current = id;
+        switchEpochRef.current += 1;
+        setActiveChatId(id);
+    };
+
+    const nextMessageId = () => {
+        messageCounterRef.current += 1;
+        return `local-${Date.now()}-${messageCounterRef.current}`;
+    };
+
+    /* -------------------------------------------------------------- */
+    /* Conversations                                                   */
+    /* -------------------------------------------------------------- */
+
+    // GET /users/chats/<id>/ - load one conversation's full history.
+    const loadChat = async (chatId, { force = false } = {}) => {
+        if (!force && chatId === activeChatIdRef.current) return;
+
+        setActive(chatId);
+        const token = ++loadTokenRef.current;
+
+        setError(false);
+        setErrorMessage("");
+        setServerErrorBanner(null);
+        setQuestion("");
+        setMessages([]);
+        setLoadingChat(true);
+
+        try {
+            const response = await api.get(`/users/chats/${chatId}/`);
+
+            // Ignore stale responses (user clicked another chat meanwhile).
+            if (token !== loadTokenRef.current || activeChatIdRef.current !== chatId) {
+                return;
+            }
+
+            const chat = response.data || {};
+            setMessages(restoreMessages({ ...chat, id: chatId }));
+            setChats(prev =>
+                prev.map(c => (c.id === chatId ? { ...c, ...chat, id: chatId } : c))
+            );
+        } catch (err) {
+            if (token !== loadTokenRef.current) return;
+            console.error("Failed to load conversation:", err);
+            setServerErrorBanner(
+                describeError(err, "Unable to load this conversation.")
+            );
+        } finally {
+            if (token === loadTokenRef.current) {
+                setLoadingChat(false);
+            }
+        }
+    };
+
+    // GET /users/chats/ - list all conversations.
     const fetchChats = async () => {
         try {
             const response = await api.get("/users/chats/");
-            const fetchedChats = Array.isArray(response.data) ? response.data : [];
-            setChats(fetchedChats);
-            if (fetchedChats.length > 0 && !activeChatId) {
-                selectChat(fetchedChats[0]);
+            const fetched = Array.isArray(response.data) ? sortChats(response.data) : [];
+            setChats(fetched);
+
+            if (fetched.length > 0 && !activeChatIdRef.current) {
+                loadChat(fetched[0].id);
             }
         } catch (err) {
             console.error("Failed to fetch chats:", err);
-            if (err.code === "ERR_NETWORK" || !err.response) {
-                setServerErrorBanner("Unable to connect to the NyayKosh server. Please ensure the backend is running.");
-            }
+            setServerErrorBanner(
+                describeError(err, "Unable to load your conversations.")
+            );
         }
     };
 
     useEffect(() => {
         fetchChats();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
     const suggestions = [
@@ -69,205 +186,243 @@ function Dashboard() {
     ];
 
     const getChatTitle = (chat) => {
-        const firstEntry = chat.chats?.[0]?.[0];
-        if (!firstEntry) return "New Legal Case";
-        const queryText = typeof firstEntry === "object" ? firstEntry.query : firstEntry[0];
-        if (!queryText) return "New Legal Case";
-        return queryText.length > 25 ? `${queryText.slice(0, 25)}...` : queryText;
+        return chat.title || "New Legal Case";
+    };
+
+    // POST /users/chats/ - always creates a separate Chat record.
+    const createChatRecord = async () => {
+        const response = await api.post("/users/chats/", {
+            title: "New Chat"
+        });
+        const newChat = response.data;
+        setChats(prev => [newChat, ...prev.filter(c => c.id !== newChat.id)]);
+        return newChat;
     };
 
     const createNewChat = async () => {
-        if (creatingChat) return;
+        if (creatingRef.current) return;
+        creatingRef.current = true;
         setCreatingChat(true);
         setError(false);
+        setErrorMessage("");
         setServerErrorBanner(null);
         try {
-            const response = await api.post("/users/chats/", {
-                chats: [[]]
-            });
-            const newChat = response.data;
-            setChats(prev => [newChat, ...prev]);
-            setActiveChatId(newChat.id);
-            setConversationId(0);
+            const newChat = await createChatRecord();
+            loadTokenRef.current += 1; // invalidate any in-flight conversation load
+            setActive(newChat.id);
             setMessages([]);
             setQuestion("");
+            setLoadingChat(false);
         } catch (err) {
             console.error("Failed to create new chat:", err);
-            setServerErrorBanner("Unable to create a new case session. Please check your connection.");
+            setServerErrorBanner(
+                describeError(err, "Unable to create a new chat.")
+            );
         } finally {
+            creatingRef.current = false;
             setCreatingChat(false);
         }
     };
 
+    // DELETE /users/chats/<id>/
     const deleteChat = async (chatId) => {
+        // Make sure the parent card's onClick does not select the chat that is being deleted.
+        suppressSelectRef.current = true;
+        setTimeout(() => {
+            suppressSelectRef.current = false;
+        }, 0);
+
+        if (deletingRef.current.has(chatId)) return;
+        deletingRef.current.add(chatId);
+
         try {
             await api.delete(`/users/chats/${chatId}/`);
-            setChats(prev => prev.filter(c => c.id !== chatId));
-            if (activeChatId === chatId) {
-                const remaining = chats.filter(c => c.id !== chatId);
+            const remaining = chatsRef.current.filter(chat => chat.id !== chatId);
+            setChats(prev => prev.filter(chat => chat.id !== chatId));
+
+            if (activeChatIdRef.current === chatId) {
                 if (remaining.length > 0) {
-                    selectChat(remaining[0]);
+                    loadChat(remaining[0].id);
                 } else {
-                    setActiveChatId(null);
+                    loadTokenRef.current += 1;
+                    setActive(null);
                     setMessages([]);
+                    setQuestion("");
+                    setLoadingChat(false);
                 }
             }
         } catch (err) {
             console.error("Failed to delete chat:", err);
+            setServerErrorBanner(
+                describeError(err, "Unable to delete conversation.")
+            );
+        } finally {
+            deletingRef.current.delete(chatId);
         }
     };
 
-    const selectChat = (chat) => {
-        setActiveChatId(chat.id);
-        setConversationId(0);
-        setError(false);
-        setServerErrorBanner(null);
+    /* -------------------------------------------------------------- */
+    /* Asking questions                                                */
+    /* -------------------------------------------------------------- */
 
-        const conversation = chat.chats?.[0] || [];
-        const restoredMessages = conversation.map((item, idx) => {
-            if (item && typeof item === "object" && !Array.isArray(item)) {
-                return {
-                    id: idx,
-                    question: item.query || item.question || "",
-                    answer: item.answer || "",
-                    sources: item.sources || [],
-                    isNew: false, // Do not animate old messages
-                    loading: false,
-                    error: false
-                };
-            } else if (Array.isArray(item)) {
-                return {
-                    id: idx,
-                    question: item[0] || "",
-                    answer: item[1] || "",
-                    sources: [],
-                    isNew: false, // Do not animate old messages
-                    loading: false,
-                    error: false
-                };
-            }
-            return null;
-        }).filter(Boolean);
+    // POST /rag/ask/ - the backend saves the Q&A, sources, title and summary.
+    // The question text is always passed explicitly (no reliance on React state timing).
+    const sendQuestion = async (rawQuestion, retryMessageId = null) => {
+        const currentQuestion = String(rawQuestion ?? "").trim();
+        if (!currentQuestion) return;
+        if (sendingRef.current || creatingRef.current) return;
 
-        setMessages(restoredMessages);
-        setQuestion("");
-    };
-
-    const sendQuestion = async (e) => {
-        if (e) e.preventDefault();
-        if (!question.trim() || sending) return;
-
-        let currentChatId = activeChatId;
-        if (!currentChatId) {
-            try {
-                const res = await api.post("/users/chats/", { chats: [[]] });
-                const newChat = res.data;
-                setChats(prev => [newChat, ...prev]);
-                setActiveChatId(newChat.id);
-                currentChatId = newChat.id;
-            } catch (err) {
-                setServerErrorBanner("Unable to initialize chat session.");
-                return;
-            }
-        }
-
-        const currentQuestion = question.trim();
-        setQuestion("");
+        sendingRef.current = true;
+        setSending(true);
         setError(false);
         setErrorMessage("");
         setServerErrorBanner(null);
-        setSending(true);
 
-        const newMsgIndex = messages.length;
-        setMessages(prev => [
-            ...prev,
-            {
-                id: newMsgIndex,
-                question: currentQuestion,
-                answer: "",
-                sources: [],
-                error: false,
-                loading: true,
-                isNew: true // Only animate this newly submitted answer
-            }
-        ]);
+        let chatId = activeChatIdRef.current;
+        const messageId = nextMessageId();
 
         try {
-            const response = await api.post("/rag/ask/", {
-                question: currentQuestion,
-                chat_id: currentChatId,
-                conversation_id: conversationId
-            });
+            // No active conversation yet: create one Chat record for it.
+            if (!chatId) {
+                try {
+                    const newChat = await createChatRecord();
+                    chatId = newChat.id;
+                    loadTokenRef.current += 1;
+                    setActive(newChat.id);
+                    setLoadingChat(false);
+                } catch (err) {
+                    console.error("Chat creation failed:", err);
+                    setServerErrorBanner(
+                        describeError(err, "Unable to create a new chat.")
+                    );
+                    return;
+                }
+            }
 
-            const answer = response.data.answer || "";
-            const sources = response.data.sources || [];
+            const epoch = switchEpochRef.current;
 
-            setMessages(prev =>
-                prev.map((msg, index) =>
-                    index === newMsgIndex
-                        ? {
-                            ...msg,
-                            answer,
-                            sources,
-                            loading: false,
-                            error: false,
-                            isNew: true
-                        }
-                        : msg
-                )
-            );
+            // A retry must not wipe whatever the user is currently typing.
+            if (!retryMessageId) {
+                setQuestion("");
+            }
 
-            // Update in-memory chat session
-            setChats(prev =>
-                prev.map(chat => {
-                    if (chat.id !== currentChatId) return chat;
-                    const updated = [...(chat.chats || [])];
-                    if (!updated[conversationId]) {
-                        updated[conversationId] = [];
+            // Display the question immediately (replacing the failed attempt on retry).
+            setMessages(prev => [
+                ...prev.filter(msg => msg.id !== retryMessageId),
+                {
+                    id: messageId,
+                    question: currentQuestion,
+                    answer: "",
+                    sources: [],
+                    error: false,
+                    loading: true,
+                    isNew: true
+                }
+            ]);
+
+            try {
+                const response = await api.post("/rag/ask/", {
+                    chat_id: chatId,
+                    question: currentQuestion
+                });
+
+                const data = response.data || {};
+                const answer = data.answer || "";
+                const sources = Array.isArray(data.sources) ? data.sources : [];
+                const title = data.title;
+                const summary = data.summary;
+
+                // Always keep the sidebar in sync for the chat the answer belongs to.
+                setChats(prev =>
+                    prev.map(chat => {
+                        if (chat.id !== chatId) return chat;
+                        return {
+                            ...chat,
+                            title: title || chat.title,
+                            summary: typeof summary === "string" ? summary : chat.summary,
+                            updated_at: new Date().toISOString(),
+                            convo: [
+                                ...(Array.isArray(chat.convo) ? chat.convo : []),
+                                { query: currentQuestion, answer, sources }
+                            ]
+                        };
+                    })
+                );
+
+                // Only touch the visible messages if this conversation is still on screen.
+                if (activeChatIdRef.current === chatId) {
+                    if (switchEpochRef.current === epoch) {
+                        setMessages(prev =>
+                            prev.map(msg =>
+                                msg.id === messageId
+                                    ? {
+                                        ...msg,
+                                        answer,
+                                        sources,
+                                        loading: false,
+                                        error: false,
+                                        isNew: true
+                                    }
+                                    : msg
+                            )
+                        );
+                    } else {
+                        // User left and came back while the request was running.
+                        loadChat(chatId, { force: true });
                     }
-                    updated[conversationId] = [
-                        ...updated[conversationId],
-                        {
-                            query: currentQuestion,
-                            answer,
-                            sources,
-                            timestamp: new Date().toISOString()
-                        }
-                    ];
-                    return { ...chat, chats: updated };
-                })
-            );
-        } catch (err) {
-            console.error("RAG request failed:", err);
-            const errDetail =
-                err.response?.data?.error ||
-                (err.code === "ERR_NETWORK"
-                    ? "Unable to connect to the NyayKosh server. Please ensure the backend is running."
-                    : "The legal AI service encountered an error. Please try again.");
+                }
+            } catch (err) {
+                console.error("RAG request failed:", err);
 
-            setMessages(prev =>
-                prev.map((msg, index) =>
-                    index === newMsgIndex
-                        ? {
-                            ...msg,
-                            answer: "",
-                            sources: [],
-                            loading: false,
-                            error: true,
-                            errorMessage: errDetail,
-                            isNew: false
-                        }
-                        : msg
-                )
-            );
-            setError(true);
-            setErrorMessage(errDetail);
-            if (err.code === "ERR_NETWORK" || err.response?.status >= 500) {
-                setServerErrorBanner(errDetail);
+                const errDetail =
+                    err.response?.status === 401
+                        ? "Your session has expired. Please sign in again."
+                        : describeError(
+                            err,
+                            "The legal AI service encountered an error. Please try again."
+                        );
+
+                if (activeChatIdRef.current === chatId) {
+                    if (switchEpochRef.current === epoch) {
+                        setMessages(prev =>
+                            prev.map(msg =>
+                                msg.id === messageId
+                                    ? {
+                                        ...msg,
+                                        answer: "",
+                                        sources: [],
+                                        loading: false,
+                                        error: true,
+                                        errorMessage: errDetail,
+                                        isNew: false
+                                    }
+                                    : msg
+                            )
+                        );
+                        setError(true);
+                        setErrorMessage(errDetail);
+                    } else {
+                        loadChat(chatId, { force: true });
+                    }
+                }
+
+                if (
+                    isConnectionError(err) ||
+                    err.response?.status === 401 ||
+                    err.response?.status >= 500
+                ) {
+                    setServerErrorBanner(errDetail);
+                }
             }
         } finally {
+            sendingRef.current = false;
             setSending(false);
         }
+    };
+
+    const handleSubmit = (e) => {
+        if (e) e.preventDefault();
+        sendQuestion(question);
     };
 
     return (
@@ -303,9 +458,8 @@ function Dashboard() {
                         <button
                             onClick={createNewChat}
                             disabled={creatingChat}
-                            className={`w-full rounded-xl border border-blue-200 bg-blue-50/70 p-3 text-left transition hover:border-blue-400 hover:bg-blue-100/60 dark:border-blue-500/30 dark:bg-blue-500/[0.06] dark:hover:border-blue-500/60 dark:hover:bg-blue-500/[0.1] ${
-                                creatingChat ? "cursor-not-allowed opacity-60" : ""
-                            }`}
+                            className={`w-full rounded-xl border border-blue-200 bg-blue-50/70 p-3 text-left transition hover:border-blue-400 hover:bg-blue-100/60 dark:border-blue-500/30 dark:bg-blue-500/[0.06] dark:hover:border-blue-500/60 dark:hover:bg-blue-500/[0.1] ${creatingChat ? "cursor-not-allowed opacity-60" : ""
+                                }`}
                         >
                             <div className="flex items-center gap-3">
                                 <span className="text-lg font-bold text-blue-600 dark:text-blue-400">+</span>
@@ -339,8 +493,16 @@ function Dashboard() {
                                 title={getChatTitle(chat)}
                                 category="Indian Statute Q&A"
                                 isActive={chat.id === activeChatId}
-                                onClick={() => selectChat(chat)}
-                                onDelete={() => deleteChat(chat.id)}
+                                onClick={() => {
+                                    if (suppressSelectRef.current) return;
+                                    loadChat(chat.id);
+                                }}
+                                onDelete={(e) => {
+                                    if (e && typeof e.stopPropagation === "function") {
+                                        e.stopPropagation();
+                                    }
+                                    deleteChat(chat.id);
+                                }}
                             />
                         ))}
 
@@ -447,7 +609,11 @@ function Dashboard() {
                 {/* Chat Scroll Area */}
                 <div className="relative min-h-0 flex-1 overflow-y-auto">
                     <div className="mx-auto w-full max-w-4xl px-4 sm:px-6 py-6 pb-48">
-                        {messages.length === 0 ? (
+                        {loadingChat && messages.length === 0 ? (
+                            <p className="pt-24 text-center text-xs text-slate-400">
+                                Loading conversation...
+                            </p>
+                        ) : messages.length === 0 ? (
                             <div className="pt-8 sm:pt-14">
                                 <div className="mb-10 text-center max-w-2xl mx-auto">
                                     <span className="inline-block rounded-full bg-blue-100 px-3 py-1 text-[10px] font-mono uppercase tracking-widest text-blue-700 dark:bg-blue-950/60 dark:text-blue-400 mb-3">
@@ -493,10 +659,7 @@ function Dashboard() {
                                                 errorMessage={msg.errorMessage}
                                                 loading={msg.loading}
                                                 isNew={msg.isNew}
-                                                onRetry={() => {
-                                                    setQuestion(msg.question);
-                                                    sendQuestion();
-                                                }}
+                                                onRetry={() => sendQuestion(msg.question, msg.id)}
                                             />
                                         </div>
                                     </div>
@@ -509,7 +672,7 @@ function Dashboard() {
 
                 {/* Input Bar */}
                 <div className="absolute bottom-0 left-0 right-0 p-4 bg-gradient-to-t from-slate-50 via-slate-50/95 to-transparent dark:from-[#111315] dark:via-[#111315]/95 dark:to-transparent transition-colors">
-                    <form onSubmit={sendQuestion} className="mx-auto max-w-3xl">
+                    <form onSubmit={handleSubmit} className="mx-auto max-w-3xl">
                         <div className="rounded-2xl border border-slate-300 bg-white p-2 shadow-xl focus-within:border-blue-500 dark:border-white/[0.1] dark:bg-[#1B1E22] dark:focus-within:border-blue-500/60 transition-all">
                             <div className="flex items-end gap-2">
                                 <textarea
@@ -518,7 +681,7 @@ function Dashboard() {
                                     onKeyDown={e => {
                                         if (e.key === "Enter" && !e.shiftKey) {
                                             e.preventDefault();
-                                            sendQuestion();
+                                            sendQuestion(question);
                                         }
                                     }}
                                     rows="1"
