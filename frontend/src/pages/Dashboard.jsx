@@ -9,7 +9,7 @@ import { useAuth } from "../context/AuthContext";
 import { useTheme } from "../context/ThemeContext";
 
 /* ------------------------------------------------------------------ */
-/* Helpers                                                             */
+/* Helpers                                                            */
 /* ------------------------------------------------------------------ */
 
 // Convert a backend Chat record's `convo` array into UI messages.
@@ -189,7 +189,6 @@ function Dashboard() {
         return chat.title || "New Legal Case";
     };
 
-    // POST /users/chats/ - always creates a separate Chat record.
     const createChatRecord = async () => {
         const response = await api.post("/users/chats/", {
             title: "New Chat"
