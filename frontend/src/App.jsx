@@ -6,6 +6,8 @@ import Login from "./pages/Login";
 import Register from "./pages/Register";
 import Dashboard from "./pages/Dashboard";
 import Admin from "./pages/Admin";
+import AdminLogin from "./pages/AdminLogin";
+import AdminRegister from "./pages/AdminRegister";
 
 function App() {
     return (
@@ -40,6 +42,16 @@ function App() {
                                     <Dashboard />
                                 </ProtectedRoute>
                             }
+                        />
+
+                        <Route
+                            path="/admin/login"
+                            element={<AdminLogin />}
+                        />
+
+                        <Route
+                            path="/admin/register"
+                            element={<AdminRegister />}
                         />
 
                         <Route

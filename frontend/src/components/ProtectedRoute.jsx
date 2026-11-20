@@ -16,6 +16,9 @@ export function ProtectedRoute({ children, adminOnly = false }) {
     }
 
     if (!token) {
+        if (adminOnly) {
+            return <Navigate to="/admin/login" replace />;
+        }
         return <Navigate to="/login" replace />;
     }
 

@@ -18,104 +18,6 @@ INDEX_PATH = os.path.join(VECTOR_DB_PATH, "legal.index")
 CHUNKS_PATH = os.path.join(VECTOR_DB_PATH, "chunks.pkl")
 EMBEDDING_DIMENSION = model.get_embedding_dimension()
 
-def extract():
-    if not os.path.isdir(DOCS_PATH):
-        raise FileNotFoundError(f"PDF directory not found: {DOCS_PATH}")
-    loader = DirectoryLoader(
-        DOCS_PATH,
-        glob="*.pdf",
-        loader_cls=PyPDFLoader,
-        show_progress=True,
-        use_multithreading=True,
-        silent_errors=False
-    )
-    docs = loader.load()
-    for doc in docs:
-        doc.metadata["source"] = os.path.basename(
-            doc.metadata.get("source", "Unknown")
-        )
-        if "page" in doc.metadata:
-            doc.metadata["page"] = int(doc.metadata["page"]) + 1
-    return [doc for doc in docs if doc.page_content.strip()]
-
-
-def get_chunks(docs):
-    splitter = RecursiveCharacterTextSplitter(
-        chunk_size=1500,
-        chunk_overlap=200,
-        separators=["\n\n", "\n", ". ", " ", ""],
-        add_start_index=True
-    )
-    return [
-        chunk for chunk in splitter.split_documents(docs)
-        if chunk.page_content.strip()
-    ]
-
-def generate_embeddings(chunks):
-    if not chunks:
-        raise ValueError("No chunks available to embed.")
-    texts = [chunk.page_content for chunk in chunks]
-    embeddings = model.encode(
-        texts,
-        normalize_embeddings=True,
-        show_progress_bar=True,
-        convert_to_numpy=True
-    )
-    embeddings = np.asarray(embeddings, dtype=np.float32)
-    if embeddings.ndim != 2 or embeddings.shape[1] != EMBEDDING_DIMENSION:
-        raise ValueError("Generated embeddings have an invalid dimension.")
-    if not np.isfinite(embeddings).all():
-        raise ValueError("Generated embeddings contain invalid values.")
-    return embeddings
-
-def build_faiss_index(embeddings):
-    embeddings = np.asarray(embeddings, dtype=np.float32)
-    if embeddings.ndim != 2 or embeddings.shape[0] == 0:
-        raise ValueError("Embeddings must be a non-empty 2D array.")
-    if embeddings.shape[1] != EMBEDDING_DIMENSION:
-        raise ValueError("Embedding dimension does not match the model.")
-    index = faiss.IndexFlatIP(embeddings.shape[1])
-    index.add(embeddings)
-    return index
-
-def save_vector_store(index, chunks):
-    if index.ntotal != len(chunks):
-        raise ValueError("FAISS index and chunks count do not match.")
-    if index.d != EMBEDDING_DIMENSION:
-        raise ValueError("FAISS index dimension does not match the model.")
-    os.makedirs(VECTOR_DB_PATH, exist_ok=True)
-    temp_index_path = INDEX_PATH + ".tmp"
-    temp_chunks_path = CHUNKS_PATH + ".tmp"
-    try:
-        faiss.write_index(index, temp_index_path)
-        with open(temp_chunks_path, "wb") as file:
-            pickle.dump(chunks, file, protocol=pickle.HIGHEST_PROTOCOL)
-        os.replace(temp_index_path, INDEX_PATH)
-        os.replace(temp_chunks_path, CHUNKS_PATH)
-    finally:
-        for path in (temp_index_path, temp_chunks_path):
-            if os.path.exists(path):
-                os.remove(path)
-
-def create_embeddings():
-    docs = extract()
-    if not docs:
-        raise ValueError(f"No readable PDF pages found in {DOCS_PATH}")
-    chunks = get_chunks(docs)
-    if not chunks:
-        raise ValueError("No chunks created from PDF documents.")
-    embeddings = generate_embeddings(chunks)
-    index = build_faiss_index(embeddings)
-    save_vector_store(index, chunks)
-    return {
-        "message": "Embeddings created successfully",
-        "documents": len({doc.metadata.get("source") for doc in docs}),
-        "pages": len(docs),
-        "chunks": len(chunks),
-        "vectors": int(index.ntotal),
-        "embedding_model": MODEL_NAME
-    }
-
 def load_index():
     if not os.path.isfile(INDEX_PATH) or not os.path.isfile(CHUNKS_PATH):
         raise FileNotFoundError(
@@ -196,17 +98,6 @@ def retrieve_relevant_chunks(query, index, chunks, k=5, threshold=0.40):
     results = [item for item in results if item["score"] >= threshold]
     return results[:k]
 
-def format_chunk_result(result):
-    chunk = result["chunk"]
-    return {
-        "score": round(float(result["score"]), 4),
-        "content": chunk.page_content,
-        "source": os.path.basename(
-            chunk.metadata.get("source", "Unknown")
-        ),
-        "page": chunk.metadata.get("page"),
-        "start_index": chunk.metadata.get("start_index")
-    }
 
 def retrieve_for_dashboard(query, index, chunks, k=5, threshold=0.50):
     if not isinstance(query, str) or not query.strip():

@@ -129,6 +129,16 @@ function Login() {
                             Create an account
                         </Link>
                     </p>
+
+                    <div className="mt-4 pt-4 border-t border-slate-100 dark:border-white/[0.05] text-center">
+                        <Link
+                            to="/admin/login"
+                            className="inline-flex items-center gap-1.5 text-[11px] font-medium text-slate-400 hover:text-slate-700 dark:text-slate-500 dark:hover:text-slate-300 transition"
+                        >
+                            <span>⚖</span>
+                            <span>NyayKosh Admin Portal</span>
+                        </Link>
+                    </div>
                 </div>
             </div>
         </div>

@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from "react";
-import { Link } from "react-router-dom";
 import ChatItem from "../components/ChatItem";
 import SuggestionCard from "../components/SuggestionCard";
 import QuestionBlock from "../components/QuestionBlock";
@@ -514,18 +513,6 @@ function Dashboard() {
 
                     {/* Sidebar Footer */}
                     <div className="border-t border-slate-200 dark:border-white/[0.08] p-3 space-y-2">
-                        {user?.is_staff && (
-                            <Link
-                                to="/admin"
-                                className="flex items-center justify-between w-full rounded-xl bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-700 border border-blue-200 hover:bg-blue-100 transition dark:bg-blue-600/10 dark:text-blue-400 dark:border-blue-500/20 dark:hover:bg-blue-600/20"
-                            >
-                                <span className="flex items-center gap-2">
-                                    <span>⚙</span> Administrator Panel
-                                </span>
-                                <span className="text-[10px] uppercase font-mono">Staff</span>
-                            </Link>
-                        )}
-
                         <div className="flex items-center justify-between px-2 pt-1 text-xs">
                             <span className="truncate max-w-[130px] font-semibold text-slate-800 dark:text-slate-200">
                                 {user?.name || user?.username || "Citizen"}
@@ -568,15 +555,6 @@ function Dashboard() {
                     </div>
 
                     <div className="flex items-center gap-3">
-                        {user?.is_staff && (
-                            <Link
-                                to="/admin"
-                                className="hidden sm:inline-flex items-center gap-1 rounded-lg border border-blue-200 bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700 hover:bg-blue-100 dark:border-blue-500/30 dark:bg-blue-500/10 dark:text-blue-400 dark:hover:bg-blue-500/20"
-                            >
-                                Admin Dashboard
-                            </Link>
-                        )}
-
                         {/* Theme Switcher Button */}
                         <button
                             onClick={toggleTheme}

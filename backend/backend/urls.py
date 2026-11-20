@@ -9,6 +9,9 @@ urlpatterns = [
     path('admin/', admin.site.urls),
     path('users/', include('User.urls')),
     path('rag/', include('rag.urls')),
+    path('docs/', include('Docs.urls')),
+    path('api/docs/', include('Docs.urls')),
+    path('api/admin/', include('Admin.urls')),
     path('api/token/', TokenObtainPairView.as_view(), name='token_obtain_pair'),
     path('api/token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
 ]

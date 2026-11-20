@@ -25,9 +25,11 @@ const processQueue = (error, token = null) => {
 
 api.interceptors.request.use(
     (config) => {
-        // Do NOT attach Authorization header for token endpoints or register endpoint
+        // Do NOT attach Authorization header for token endpoints, admin auth, or register endpoint
         const isAuthEndpoint =
             config.url?.includes("/api/token/") ||
+            config.url?.includes("/api/admin/login/") ||
+            config.url?.includes("/api/admin/register/") ||
             (config.url === "/users/" && config.method?.toLowerCase() === "post");
 
         if (!isAuthEndpoint) {
